@@ -1,4 +1,10 @@
-collectivesensingsimulation
+#  Collective Sensing
+
+Simulation for collective animal behavior combining social and environmental information.  Uses the Couzin (zonal) model for social interactions and environmental information is given via gradient sensing via noisy scale field.
+
+
+
+
 
 Source code for the zonal gradient sensing simulation
 This code is provided freely, however when using this code you are asked to cite these related paper:
