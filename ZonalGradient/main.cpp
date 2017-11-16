@@ -1,0 +1,401 @@
+/*
+
+This code is provided freely, however when using this code you are asked to cite these related paper: 
+Puckett, J.G., Pokhrel, A.R. and Giannini, J.A. (2017) Collective gradient sensing in fish schools
+
+This code is modified from original work by 
+Berdahl, A., Torney, C.J., Ioannou, C.C., Faria, J. & Couzin, I.D. (2013) Emergent sensing of complex environments by mobile animal groups, Science
+
+GNU Public Licence Copyright (c) Colin Torney
+Comments and questions to colin.j.torney@gmail.com
+
+
+Below are modifications/updates/revisions to the code by Torney
+Update log:
+2017/02/01 		Update CUDA used throughout code to CUDA8.0 	 	
+2017/04/01 		Change visualization to use opencv2
+2017/05/01 		Update input arguments and file handling
+2017/05/02 		Change particleSystem to include gradient sensing
+2017/06/01 		Add gradient sensing error
+
+*/
+
+
+#include <cstdlib>
+#include <cstdio>
+#include <algorithm>
+#include <string>
+#include <math.h>
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+#include <iostream>
+#include <fstream>
+#include "main.h"
+#include "noise.h"
+#include "particleSystem.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#include <opencv2/highgui/highgui.hpp> 			
+#include <opencv2/imgproc/imgproc.hpp> 
+#include <opencv2/core/core.hpp>
+
+using namespace std;
+using namespace cv;
+void cudaInfo();
+float getNoiseMax(float *fieldArray, int noiseSize);
+float getNoiseAverage(float *fieldArray, int noiseSize, float nmax);
+void saveNoisePNG(float *array,int noiseSize, float maxNoise, string filename);
+void field2saveArray(float *fieldArray, int noiseSize, float nmax, float navg, float noiseScale, float xpatchloc, float ypatchloc, float amp, float width, string filename);
+void smoothImage(float *fieldArray, int noiseSize,cv::Mat &Output,float *XgradArray,float *YgradArray);
+void makeOutputDirectories(string dirS,bool qSaveImg);
+float timestep = 0.125f;
+bool qSaveImg=0;
+
+
+unsigned int timer;
+
+string filenamePatch; 		//filename save Patch x,y
+string filenameParticles; 	//filename save particles
+string filenameReadme;   	//filename readme
+string dirS = "/media/data2/sim/";
+ParticleSystem *psystem = 0;
+clsField *gfield = 0;
+//default options, to be overwritten by input arguments
+int numSteps = 1000;//timeSteps
+int numThreads=10; //numparticles
+float noiseScale=0.4; //NoiseScalr
+float visc = 0.001;
+int randSeed = 1;
+float ozone = 2; 	 	//Radius of Orientation
+float azone = 6;      //Radius of Attraction
+
+int noiseSize = 256;
+bool debug = false;
+float *posArray=0;
+std::string outFile="./particles.dat";
+//Mat noiseImg;
+Mat noiseImg=cv::Mat(noiseSize,noiseSize, CV_32F, 0.0); 
+Mat noiseImg2=cv::Mat(noiseSize,noiseSize, CV_32F, 0.0);
+float weight=0;
+
+
+float gradError=0.00;  //error in gradient sensing		
+
+int main(int argc, char ** argv) 
+{
+    //new input arguments
+	float noiseScale, nmax, navg;
+	if (argc==1)	{ 
+		printf("arguments: numParticles noiseScale numSteps randSeed saveDirectory ozone azone weight gradientError debug\n");
+		printf("example:\n");
+		printf("./zonalApp 128 0.1 1000 1 /media/data1/aawaz/test/00000 3 5.5 0.2 1.0 1\n");
+		return 0;}
+	if (argc>1)
+		numThreads=atoi(argv[1]);
+	if (argc>2)
+		noiseScale = atof(argv[2]);	
+	if (argc>3)
+		numSteps = atoi(argv[3]);
+	if (argc>4)
+		randSeed  = atoi(argv[4]);
+	if (argc>5)
+		dirS = argv[5];
+	if (argc>6)
+		ozone = atof(argv[6]);
+	if (argc>7)
+		azone = atof(argv[7]);
+         if (argc>8)
+		weight = atof(argv[8]);
+	if (argc>9)
+		gradError = atof(argv[9]);	
+	if (argc>10)
+		debug = (bool)atoi(argv[10]);	
+
+	int numBlocks=1;
+	int numParticles = numThreads*numBlocks;
+	//display input arguments
+	/*
+	printf("Particles      =%d\n",numParticles);     
+	printf("TimeSteps      =%d\n",numSteps);     
+	printf("NoiseScale     =%4.4f\n",noiseScale);     
+	printf("RandSeed       =%d\n",randSeed);     
+	printf("ozone          =%4.4f\n",ozone);     
+	printf("azone          =%4.4f\n",azone);     
+	printf("Save Directory =%s\n",dirS.c_str());     
+	*/
+	cudaInfo();
+	cudaDeviceReset();
+	//make directories
+	makeOutputDirectories(dirS,qSaveImg);	
+	//make readmeFile
+	ofstream readmeFile;
+	filenameReadme = dirS+"/readme.txt";	
+	readmeFile.open(filenameReadme.c_str());
+	readmeFile<<"Particles = "<<numParticles<<'\n';
+	readmeFile<<"TimeSteps = "<<numSteps<<'\n';
+	readmeFile<<"NoiseScale = "<<noiseScale<<'\n';
+	readmeFile<<"RandSeed = "<<randSeed<<'\n';
+	readmeFile<<"ozone = "<<ozone<<'\n';
+	readmeFile<<"azone = "<<azone<<'\n';
+        readmeFile<<"weight = "<<weight<<'\n';
+	readmeFile<<"gradError = "<<gradError<<'\n';
+	readmeFile.close();
+	//particle data
+	ofstream myfile;
+
+	filenameParticles = dirS+"/particles.dat";	
+	myfile.open(filenameParticles.c_str());
+	srand( randSeed );//srand( time(NULL));
+
+	gfield = new clsField(noiseSize, 0.025, randSeed, visc);	
+	psystem = new ParticleSystem(numParticles, numBlocks, numThreads, timestep, noiseSize, noiseScale, azone, ozone,weight,gradError);
+
+	psystem->reset();
+
+	psystem->setNoiseField(gfield->getDeviceField());
+	posArray = psystem->getPositions();
+        float *velArray = psystem->getVelocity();
+	
+      
+	float *fieldArray =  gfield->getHostField();  
+	string imgNoiseName; char imgNameBuff[100];
+	// moving patch parameters
+	int switch_time = 0;
+	float heading = 0;
+	float xpatchloc = (rand()/(RAND_MAX+1.0));
+	float ypatchloc = (rand()/(RAND_MAX+1.0));
+	//patch parameters
+	float amp = 1.5;
+	float width = 0.275; 
+	float speed = 0.0051;
+	float avLight = 0.0f;
+        std::vector<cv::Scalar> color;
+	getRandColorArray(numParticles, color);
+
+
+       ///psi data
+       size_t lastindex = outFile.find_last_of("."); 
+	std::string outFileParticles = outFile.substr(0, lastindex); 
+        
+	outFileParticles 	= dirS + "/psi.dat";
+	
+	ofstream myfileParticles;
+	myfileParticles.open(outFileParticles.c_str());
+
+	smoothImage(fieldArray,noiseSize,noiseImg,XgradArray,YgradArray);
+
+    
+	/*
+		Begin Simulation
+	*/
+        //cudaInfo(); 		
+	for (int t=0;t<numSteps;t++)
+	    {   
+             
+		psystem->advanceTimestep(xpatchloc, ypatchloc);
+		gfield->advanceTimestep();
+		//update new heading
+		if (t==switch_time)
+		{
+		    float nextx = (rand()/(RAND_MAX+1.0));
+		    float nexty = (rand()/(RAND_MAX+1.0));
+
+		    switch_time = t+1+(int)(sqrt(pow(xpatchloc-nextx,2)+pow(ypatchloc-nexty,2))/speed);
+		    heading = atan2(nexty-ypatchloc, nextx-xpatchloc);
+		}
+		xpatchloc+=speed*cos(heading);
+		ypatchloc+=speed*sin(heading);
+
+		if (xpatchloc>1.0f)
+		    xpatchloc-=1.0f;
+		if (ypatchloc>1.0f)
+		    ypatchloc-=1.0f;
+		if (xpatchloc<0.0f)
+		    xpatchloc+=1.0f;
+		if (ypatchloc<0.0f)
+		    ypatchloc+=1.0f;
+
+		psystem->prepareSave();
+		
+		gfield->prepareSave();
+		sprintf (imgNameBuff, "%05d.png",t); 
+		imgNoiseName=dirS+"/img/"+imgNameBuff;
+		nmax = getNoiseMax(fieldArray, noiseSize);
+
+		navg =  getNoiseAverage(fieldArray, noiseSize, nmax);
+		
+			field2saveArray(fieldArray, noiseSize, nmax, navg, noiseScale, xpatchloc, ypatchloc, amp, width, imgNoiseName);
+		//cudaInfo();
+
+   		//debug//display  ; now using openCV
+            if (debug){      
+		Mat output;
+			output =noiseImg.clone();
+                   
+		    plotParticles(posArray, numParticles, noiseSize, color, output);
+		
+                   }
+
+                  if ( t%100==0 ){
+			psystem->saveDataPsi(myfileParticles);
+			psystem->saveData(myfile,t);
+                       } 		
+                if ( t%100==0 )
+			std::cout<<t<<"  "<<posArray[2]/posArray[3]<<'\n';
+ 
+		}
+             
+	if (psystem)
+                    delete psystem;
+	delete [] fieldArray;
+	myfile.close();
+ 	cudaThreadExit();	
+	cudaDeviceReset();
+    	return 0;
+}
+
+//updated functions below
+float getNoiseMax(float *fieldArray, int noiseSize)
+{
+    float nmax=0.0;
+    for (int i=0;i<noiseSize*noiseSize;i++)
+    {
+        if (nmax<fieldArray[i])
+            nmax=fieldArray[i];
+    }
+    return nmax;
+}
+float getNoiseAverage(float *fieldArray, int noiseSize, float nmax)
+{
+	float navg=0.0;
+	int nc = 0;
+	for(int i = 0; i < noiseSize*noiseSize;i++)
+	{
+		navg+=fieldArray[i];
+		nc++;
+	}
+	navg/=(nmax*(float)(nc));
+	return navg;
+}
+
+void makeOutputDirectories(string dirS,bool qSaveImg)
+{
+ 	mode_t mode = 0777;
+	int mdret;
+	mdret  = mkdir(dirS.c_str(),mode);
+	if((mdret=mkdir(dirS.c_str(),mode)) && errno!=EEXIST){
+            cout<<strerror(errno)<<endl;
+        }
+    if (qSaveImg){
+	string dirI = dirS+"/img";
+	if((mdret=mkdir(dirI.c_str(),mode)) && errno!=EEXIST){
+            cout<<strerror(errno)<<endl;
+        }
+	dirI = dirS+"/imgP";
+	if((mdret=mkdir(dirI.c_str(),mode)) && errno!=EEXIST){
+            cout<<strerror(errno)<<endl;
+        }
+    }
+}
+
+
+void field2saveArray(float *fieldArray, int noiseSize, float nmax, float navg, float noiseScale, float xpatchloc, float ypatchloc, float amp, float width, string filename)
+{
+//png::image< png::rgb_pixel > image(noiseSize, noiseSize);
+float grey = 0;
+int greyi=0;
+for (int i=0;i<noiseSize;i++)
+    {
+    for (int j=0;j<noiseSize;j++)
+        {
+        float xdiff = (float)i/(float)noiseSize - xpatchloc;
+        float ydiff = (float)j/(float)noiseSize - ypatchloc;
+        if (xdiff > 0.5)
+            xdiff = 1.0f - xdiff;
+        if (xdiff < -0.5)
+            xdiff = 1.0f + xdiff;
+        if (ydiff > 0.5)
+            ydiff = 1.0f - ydiff;
+        if (ydiff < -0.5)
+            ydiff = 1.0f + ydiff;
+	grey = 1.0-amp*exp(-powf(pow(xdiff,2)+pow(ydiff,2),0.5)/width) + noiseScale*((fieldArray[noiseSize*j+i]/nmax)-navg);
+	greyi =(int)(256*grey);
+	if (greyi<0){ greyi=0;}
+	if (greyi>255){ greyi=255;}
+	noiseImg.at<float>(cv::Point(i,j))	= grey;	
+	//image[j][i] = png::rgb_pixel(greyi,greyi,greyi);
+        }
+//    	printf("%4.4f\n",nmax);
+    }
+
+            noiseImg.setTo(0, noiseImg<0); 	//min is 0
+            noiseImg.setTo(1, noiseImg>1);	//max is 1
+
+
+//image.write(filename);
+}
+
+
+
+
+
+//function from original code below.  Initializing GPU
+void setUpGrid(int numParticles, int &numBlocks, int &numThreads)
+{
+    // get multiprocessor count for current device
+    int device;
+    cudaGetDevice(&device);
+    cudaDeviceProp device_properties;
+    cudaGetDeviceProperties(&device_properties, device);
+
+    // calculate threads per block (256,192,128 or 64) ideally using more blocks than multiprocessors
+    int nMP=device_properties.multiProcessorCount;
+    int numT;
+
+    for (numT=256;numT>=64;numT-=64)
+    {
+        numThreads=min(numT,numParticles);
+        if ((numParticles/numT)>nMP)
+            break;
+    }
+
+    // set number of blocks and account for any remainder
+    if ((numParticles % numThreads)==0)
+        numBlocks=numParticles/numThreads;
+    else
+        numBlocks=(numParticles/numThreads)+1;
+}
+
+
+void cudaInfo()
+{
+	// show memory usage of GPU
+        size_t free_byte ;
+        size_t total_byte ;
+        cudaSetDevice( 0 );
+	cudaError_t cuda_status;
+        cuda_status = cudaMemGetInfo( &free_byte, &total_byte ) ;
+        if ( cudaSuccess != cuda_status ){
+            printf("Error: cudaMemGetInfo fails, %s \n", cudaGetErrorString(cuda_status) );
+            exit(1);
+        }
+        double free_db = (double)free_byte ;
+        double total_db = (double)total_byte ;
+        double used_db = total_db - free_db ;
+	int i=0;
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties(&prop, i);
+	printf("Device Number: %d\n", i);
+	printf("  Device name: %s\n", prop.name);
+	printf("  Memory Clock Rate (KHz): %d\n",
+	   prop.memoryClockRate);
+	printf("  Memory Bus Width (bits): %d\n",
+	   prop.memoryBusWidth);
+	printf("  Peak Memory Bandwidth (GB/s): %f\n\n",
+	   2.0*prop.memoryClockRate*(prop.memoryBusWidth/8)/1.0e6);
+	printf("GPU memory usage: used = %f, free = %f MB, total = %f MB\n",
+	    used_db/1024.0/1024.0, free_db/1024.0/1024.0, total_db/1024.0/1024.0);
+}
+
+
