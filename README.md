@@ -1,6 +1,6 @@
 #  Collective Sensing
 
-GPU Simulation for collective animal behavior combining social and environmental information.  Uses the Couzin (zonal) model for social interactions and environmental information is given via gradient sensing via noisy scale field.
+GPU Simulation for collective animal behavior combining social and environmental information.  Uses the Couzin (zonal) model for social interactions and environmental information is given via gradient sensing via noisy scale field.  The simulation and paper cited below investigates how the group performance depends on how individuals weigh individual information (gradients) and social information (local polarization).
 
 
 
