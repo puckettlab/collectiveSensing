@@ -1,18 +1,13 @@
 #  Collective Sensing
 
-Simulation for collective animal behavior combining social and environmental information.  Uses the Couzin (zonal) model for social interactions and environmental information is given via gradient sensing via noisy scale field.
-
-
+GPU Simulation for collective animal behavior combining social and environmental information.  Uses the Couzin (zonal) model for social interactions and environmental information is given via gradient sensing via noisy scale field.
 
 
 
 Source code for the zonal gradient sensing simulation.
-This code is provided freely, however when using this code you are asked to cite these related paper:
+This code is provided freely, however when using this code you are asked to cite these papers:
 
-Puckett, J.G., Pokhrel, A.R. and Giannini, J.A. (2017) Collective gradient sensing in fish schools
+  <p>Puckett JG, Pokhrel AR, Giannini JA. Collective gradient sensing in fish schools. Scientific reports. 2018 May 15;8(1):1-1.</p>
+  <p>Berdahl A, Torney CJ, Ioannou CC, Faria JJ, Couzin ID. Emergent sensing of complex environments by mobile animal groups. Science. 2013 Feb 1;339(6119):574-6.
+The emergent sensing code is published under GNU Public Licence Copyright (c) Colin Torney. Code from this work examines how collective sensing can be established through speed-driven interaction with the darkness.  No individual sensing of gradients is necessary.</p>
 
-
-This code is modified from original work by:
-
-Berdahl, A., Torney, C.J., Ioannou, C.C., Faria, J. &amp; Couzin, I.D. (2013) Emergent sensing of complex environments by mobile animal groups, Science</p>
-GNU Public Licence Copyright (c) Colin Torney.
